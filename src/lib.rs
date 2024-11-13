@@ -9,10 +9,13 @@ use ark_ff::{fields::Field, PrimeField};
 use ark_std::str::FromStr;
 use ark_std::{One, Zero};
 use core::ops::{AddAssign, MulAssign, SubAssign};
+use std::array;
 
 use ark_std::{rand::Rng, UniformRand};
 
 use poseidon_ark::Poseidon;
+
+use std::cmp::min;
 
 #[cfg(not(feature = "aarch64"))]
 #[cfg(not(feature = "wasm"))]
@@ -181,24 +184,24 @@ impl Point {
         r.affine()
     }
 
-    // pub fn compress(&self) -> [u8; 32] {
-    //     let p = &self;
-    //     let mut r: [u8; 32] = [0; 32];
-    //     // let x_big = BigInt::parse_bytes(to_hex(&p.x).as_bytes(), 16).unwrap();
-    //     // let y_big = BigInt::parse_bytes(to_hex(&p.y).as_bytes(), 16).unwrap();
-    //     // let x_big = BigInt::parse_bytes(&p.x.into_bigint().to_bytes_be(), 16).unwrap();
-    //     // let y_big = BigInt::parse_bytes(&p.y.into_bigint().to_bytes_be(), 16).unwrap();
-    //     let x_big = &p.x.into_bigint();
-    //     let y_big = &p.y.into_bigint();
-    //     // let (_, y_bytes) = y_big.to_bytes_le();
-    //     let y_bytes = y_big.to_bytes_le();
-    //     let len = min(y_bytes.len(), r.len());
-    //     r[..len].copy_from_slice(&y_bytes[..len]);
-    //     if x_big > (Q.clone() >> 1) {
-    //         r[31] |= 0x80;
-    //     }
-    //     r
-    // }
+    pub fn compress(&self) -> [u8; 32] {
+        let p = &self;
+        let mut r: [u8; 32] = [0; 32];
+        let x_big = &p.x.into_bigint();
+        let y_big = &p.y.into_bigint();
+        let y_bytes = y_big.to_bytes_le();
+        let len = min(y_bytes.len(), r.len());
+        r[..len].copy_from_slice(&y_bytes[..len]);
+        let field_size_over_2 = {
+            let mut x = Q.clone();
+            x.div2();
+            x
+        };
+        if x_big > &field_size_over_2 {
+            r[31] |= 0x80;
+        }
+        r
+    }
 
     pub fn equals(&self, p: Point) -> bool {
         if self.x == p.x && self.y == p.y {
@@ -212,39 +215,34 @@ pub fn test_bit(b: &[u8], i: usize) -> bool {
     b[i / 8] & (1 << (i % 8)) != 0
 }
 
-// pub fn decompress_point(bb: [u8; 32]) -> Result<Point, String> {
-//     // https://tools.ietf.org/html/rfc8032#section-5.2.3
-//     let mut sign: bool = false;
-//     let mut b = bb;
-//     if b[31] & 0x80 != 0x00 {
-//         sign = true;
-//         b[31] &= 0x7F;
-//     }
-//     let y: BigInt = BigInt::from_bytes_le(Sign::Plus, &b[..]);
-//     if y >= Q.clone() {
-//         return Err("y outside the Finite Field over R".to_string());
-//     }
-//     let one: BigInt = One::one();
-//
-//     // x^2 = (1 - y^2) / (a - d * y^2) (mod p)
-//     let den = utils::modinv(
-//         &utils::modulus(
-//             &(&A_BIG.clone() - utils::modulus(&(&D_BIG.clone() * (&y * &y)), &Q)),
-//             &Q,
-//         ),
-//         &Q,
-//     )?;
-//     let mut x: BigInt = utils::modulus(&((one - utils::modulus(&(&y * &y), &Q)) * den), &Q);
-//     x = utils::modsqrt(&x, &Q)?;
-//
-//     if sign && (x <= (&Q.clone() >> 1)) || (!sign && (x > (&Q.clone() >> 1))) {
-//         x *= -(1.to_bigint().unwrap());
-//     }
-//     x = utils::modulus(&x, &Q);
-//     let x_fr: Fq = Fq::from_str(&x.to_string()).unwrap();
-//     let y_fr: Fq = Fq::from_str(&y.to_string()).unwrap();
-//     Ok(Point { x: x_fr, y: y_fr })
-// }
+pub fn decompress_point(bb: [u8; 32]) -> Result<Point, String> {
+    // https://tools.ietf.org/html/rfc8032#section-5.2.3
+    let mut sign: bool = false;
+    let mut b = bb;
+    if b[31] & 0x80 != 0x00 {
+        sign = true;
+        b[31] &= 0x7F;
+    }
+    let y: BigInt = BigInt::try_from(num_bigint::BigUint::from_bytes_le(&b[..])).map_err(|_| format!("Error converting between bigint types."))?;
+    if y >= Q.clone() {
+        return Err("y outside the Finite Field over R".to_string()); 
+    }
+
+    let y: Fq = Fq::from(y);
+
+    // x^2 = (1 - y^2) / (a - d * y^2) (mod p)
+    let num = Fq::one() - y*y;
+    let den = *A - *D*y*y;
+    let x = (num/den).sqrt().ok_or(format!("Error computing square root of x^2."))?;
+    let field_size_over_2 = Fq::from({
+        let mut x = Q.clone();
+        x.div2();
+        x
+    });
+    let sign_check = if sign && (x <= field_size_over_2) || (!sign && (x > field_size_over_2)) { Fq::from(-1) } else { Fq::one() };
+    let x = sign_check*x;
+    Ok(Point { x, y })
+}
 
 #[cfg(not(feature = "aarch64"))]
 #[cfg(not(feature = "wasm"))]
@@ -276,30 +274,30 @@ pub struct Signature {
     pub s: Fr,
 }
 
-// impl Signature {
-//     pub fn compress(&self) -> [u8; 64] {
-//         let mut b: Vec<u8> = Vec::new();
-//         b.append(&mut self.r_b8.compress().to_vec());
-//         let (_, s_bytes) = self.s.to_bytes_le();
-//         let mut s_32bytes: [u8; 32] = [0; 32];
-//         let len = min(s_bytes.len(), s_32bytes.len());
-//         s_32bytes[..len].copy_from_slice(&s_bytes[..len]);
-//         b.append(&mut s_32bytes.to_vec());
-//         let mut r: [u8; 64] = [0; 64];
-//         r[..].copy_from_slice(&b[..]);
-//         r
-//     }
-// }
+impl Signature {
+    pub fn compress(&self) -> [u8; 64] {
+        let mut b: Vec<u8> = Vec::new();
+        b.append(&mut self.r_b8.compress().to_vec());
+        let s_bytes = self.s.into_bigint().to_bytes_le();
+        let mut s_32bytes: [u8; 32] = [0; 32];
+        let len = min(s_bytes.len(), s_32bytes.len());
+        s_32bytes[..len].copy_from_slice(&s_bytes[..len]);
+        b.append(&mut s_32bytes.to_vec());
+        let mut r: [u8; 64] = [0; 64];
+        r[..].copy_from_slice(&b[..]);
+        r
+    }
+}
 
-// pub fn decompress_signature(b: &[u8; 64]) -> Result<Signature, String> {
-//     let r_b8_bytes: [u8; 32] = *array_ref!(b[..32], 0, 32);
-//     let s: BigInt = BigInt::from_bytes_le(Sign::Plus, &b[32..]);
-//     let r_b8 = decompress_point(r_b8_bytes);
-//     match r_b8 {
-//         Result::Err(err) => Err(err),
-//         Result::Ok(res) => Ok(Signature { r_b8: res, s }),
-//     }
-// }
+pub fn decompress_signature(b: &[u8; 64]) -> Result<Signature, String> {
+    let r_b8_bytes: [u8; 32] = array::from_fn(|i| b[i]);
+    let s: Fr = <Fr as PrimeField>::from_le_bytes_mod_order(&b[32..]);
+    let r_b8 = decompress_point(r_b8_bytes);
+    match r_b8 {
+        Result::Err(err) => Err(err),
+        Result::Ok(res) => Ok(Signature { r_b8: res, s }),
+    }
+}
 
 pub struct PrivateKey {
     pub key: [u8; 32],
@@ -617,48 +615,48 @@ mod tests {
         let v = verify(pk, sig, msg);
         assert_eq!(v, true);
     }
-    //
-    //     #[test]
-    //     fn test_point_compress_decompress() {
-    //         let p: Point = Point {
-    //             x: Fq::from_str(
-    //                 "17777552123799933955779906779655732241715742912184938656739573121738514868268",
-    //             )
-    //             .unwrap(),
-    //             y: Fq::from_str(
-    //                 "2626589144620713026669568689430873010625803728049924121243784502389097019475",
-    //             )
-    //             .unwrap(),
-    //         };
-    //         let p_comp = p.compress();
-    //         assert_eq!(
-    //             hex::encode(p_comp),
-    //             "53b81ed5bffe9545b54016234682e7b2f699bd42a5e9eae27ff4051bc698ce85"
-    //         );
-    //         let p2 = decompress_point(p_comp).unwrap();
-    //         assert_eq!(p.x, p2.x);
-    //         assert_eq!(p.y, p2.y);
-    //     }
-    //
-    //     #[test]
-    //     fn test_point_decompress0() {
-    //         let y_bytes_raw =
-    //             hex::decode("b5328f8791d48f20bec6e481d91c7ada235f1facf22547901c18656b6c3e042f")
-    //                 .unwrap();
-    //         let mut y_bytes: [u8; 32] = [0; 32];
-    //         y_bytes.copy_from_slice(&y_bytes_raw);
-    //         let p = decompress_point(y_bytes).unwrap();
-    //
-    //         let expected_px_raw =
-    //             hex::decode("b86cc8d9c97daef0afe1a4753c54fb2d8a530dc74c7eee4e72b3fdf2496d2113")
-    //                 .unwrap();
-    //         let mut e_px_bytes: [u8; 32] = [0; 32];
-    //         e_px_bytes.copy_from_slice(&expected_px_raw);
-    //         let expected_px: Fq =
-    //             Fq::from_str(&BigInt::from_bytes_le(Sign::Plus, &e_px_bytes).to_string()).unwrap();
-    //         assert_eq!(&p.x, &expected_px);
-    //     }
-    //
+    
+        #[test]
+        fn test_point_compress_decompress() {
+            let p: Point = Point {
+                x: Fq::from_str(
+                    "17777552123799933955779906779655732241715742912184938656739573121738514868268",
+                )
+                .unwrap(),
+                y: Fq::from_str(
+                    "2626589144620713026669568689430873010625803728049924121243784502389097019475",
+                )
+                .unwrap(),
+            };
+            let p_comp = p.compress();
+            assert_eq!(
+                hex::encode(p_comp),
+                "53b81ed5bffe9545b54016234682e7b2f699bd42a5e9eae27ff4051bc698ce85"
+            );
+            let p2 = decompress_point(p_comp).unwrap();
+            assert_eq!(p.x, p2.x);
+            assert_eq!(p.y, p2.y);
+        }
+    
+        #[test]
+        fn test_point_decompress0() {
+            let y_bytes_raw =
+                hex::decode("b5328f8791d48f20bec6e481d91c7ada235f1facf22547901c18656b6c3e042f")
+                    .unwrap();
+            let mut y_bytes: [u8; 32] = [0; 32];
+            y_bytes.copy_from_slice(&y_bytes_raw);
+            let p = decompress_point(y_bytes).unwrap();
+    
+            let expected_px_raw =
+                hex::decode("b86cc8d9c97daef0afe1a4753c54fb2d8a530dc74c7eee4e72b3fdf2496d2113")
+                    .unwrap();
+            let mut e_px_bytes: [u8; 32] = [0; 32];
+            e_px_bytes.copy_from_slice(&expected_px_raw);
+            let expected_px: Fq =
+                <Fq as PrimeField>::from_le_bytes_mod_order(&e_px_bytes);
+            assert_eq!(&p.x, &expected_px);
+        }
+    
     //     #[test]
     //     fn test_point_decompress1() {
     //         let y_bytes_raw =
@@ -700,26 +698,27 @@ mod tests {
     //         }
     //     }
     //
-    //     #[test]
-    //     fn test_signature_compress_decompress() {
-    //         let sk = new_key();
-    //         let pk = sk.public();
-    //
-    //         for i in 0..5 {
-    //             let msg_raw = "123456".to_owned() + &i.to_string();
-    //             let msg = BigInt::parse_bytes(msg_raw.as_bytes(), 10).unwrap();
-    //             let sig = sk.sign(msg.clone()).unwrap();
-    //
-    //             let compressed_sig = sig.compress();
-    //             let decompressed_sig = decompress_signature(&compressed_sig).unwrap();
-    //             assert_eq!(&sig.r_b8.x, &decompressed_sig.r_b8.x);
-    //             assert_eq!(&sig.r_b8.y, &decompressed_sig.r_b8.y);
-    //             assert_eq!(&sig.s, &decompressed_sig.s);
-    //
-    //             let v = verify(pk.clone(), decompressed_sig, msg);
-    //             assert_eq!(v, true);
-    //         }
-    //     }
+        #[test]
+    fn test_signature_compress_decompress() {
+                let mut rng = ark_std::test_rng();
+            let sk = new_key(&mut rng);
+            let pk = sk.public();
+    
+            for i in 0..5 {
+                let msg_raw = "123456".to_owned() + &i.to_string();
+                let msg = Fq::from_str(&msg_raw).unwrap();
+                let sig = sk.sign(msg.clone()).unwrap();
+    
+                let compressed_sig = sig.compress();
+                let decompressed_sig = decompress_signature(&compressed_sig).unwrap();
+                assert_eq!(&sig.r_b8.x, &decompressed_sig.r_b8.x);
+                assert_eq!(&sig.r_b8.y, &decompressed_sig.r_b8.y);
+                assert_eq!(&sig.s, &decompressed_sig.s);
+    
+                let v = verify(pk.clone(), decompressed_sig, msg);
+                assert_eq!(v, true);
+            }
+        }
     //
     //     #[test]
     //     fn test_schnorr_signature() {
