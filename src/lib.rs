@@ -148,7 +148,7 @@ impl PointProjective {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Point {
     pub x: Fq,
     pub y: Fq,
