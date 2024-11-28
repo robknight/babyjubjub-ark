@@ -268,7 +268,7 @@ fn blh(b: &[u8]) -> Vec<u8> {
     hasher.finalize().to_vec()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Signature {
     pub r_b8: Point,
     pub s: Fr,
