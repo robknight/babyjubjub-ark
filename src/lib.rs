@@ -299,6 +299,7 @@ pub fn decompress_signature(b: &[u8; 64]) -> Result<Signature, String> {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PrivateKey {
     pub key: [u8; 32],
 }
