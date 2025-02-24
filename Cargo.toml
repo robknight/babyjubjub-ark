@@ -12,7 +12,7 @@ readme = "README.md"
 ark-ff = "0.4.0"
 ark-bn254 = { version = "0.4.0" }
 ark-std = { version = "0.4.0" }
-poseidon-ark = { git = "https://github.com/arnaucube/poseidon-ark" }
+poseidon-ark = { git = "https://github.com/robknight/poseidon-ark", default-features = false, features = ["poseidon-5"] }
 
 
 # ff = {package="ff_ce" , version= "0.11", features = ["derive"]}
